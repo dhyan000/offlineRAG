@@ -92,7 +92,10 @@ backend/logs/
 *.sqlite
 *.sqlite3
 
-# ChromaDB / Vector DB
+# Storage & Uploads
+storage/
+backend/storage/
+backend/api/storage/
 storage/chroma/
 storage/vectors/
 

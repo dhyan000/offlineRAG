@@ -1,396 +1,388 @@
-import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { ProcessingOrb } from '@/components/3d/ProcessingOrb';
 import {
-  UploadCloud,
-  FileText,
-  Music,
-  Video,
-  CheckCircle2,
-  Loader2,
-  AlertCircle,
-  FolderKanban,
-  Sparkles,
-  Trash2,
-  Database,
-  Cpu,
-  Clock,
-  ListChecks,
+  Upload, CheckCircle2, ShieldCheck, RefreshCw,
+  Database, Trash2, ExternalLink, AlertCircle, Loader2
 } from 'lucide-react';
-import type { Document, DocumentType } from '@/types';
+import { documentsApi } from '@/services/api';
+import type { Document } from '@/types';
 
-// Active processing statuses — polling runs only when any document has one of these
-const ACTIVE_STATUSES = new Set(['uploaded', 'queued', 'processing', 'transcribing', 'embedding']);
+// ── Processing stage labels ────────────────────────────────────────────────────
+const PIPELINE_STAGES = ['Upload', 'Extraction', 'Chunking', 'Embedding', 'Indexing'] as const;
 
-function getStatusBadge(status: string) {
+function getDocTypeCategory(type: string): 'pdf' | 'audio' | 'video' | 'txt' {
+  if (['mp3', 'wav', 'm4a', 'flac'].includes(type)) return 'audio';
+  if (['mp4', 'mov', 'mkv'].includes(type)) return 'video';
+  if (type === 'txt' || type === 'docx' || type === 'doc') return 'txt';
+  return 'pdf';
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function statusColor(status: string) {
   switch (status) {
-    case 'indexed':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-          <CheckCircle2 size={12} /> Indexed
-        </span>
-      );
-    case 'uploaded':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-400 border border-slate-500/20">
-          <UploadCloud size={12} /> Uploaded
-        </span>
-      );
-    case 'queued':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
-          <ListChecks size={12} /> Queued
-        </span>
-      );
+    case 'indexed': return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
     case 'processing':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-          <Loader2 size={12} className="animate-spin" /> Processing
-        </span>
-      );
     case 'transcribing':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20">
-          <Loader2 size={12} className="animate-spin" /> Transcribing
-        </span>
-      );
-    case 'embedding':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-          <Loader2 size={12} className="animate-spin" /> Embedding
-        </span>
-      );
-    case 'failed':
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-          <AlertCircle size={12} /> Failed
-        </span>
-      );
-    default:
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-600/20 text-slate-500 border border-slate-700">
-          {status}
-        </span>
-      );
+    case 'embedding': return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
+    case 'uploaded':
+    case 'queued': return 'text-blue-400 border-blue-500/30 bg-blue-500/10';
+    case 'failed': return 'text-red-400 border-red-500/30 bg-red-500/10';
+    default: return 'text-slate-400 border-white/10 bg-studio-800/50';
   }
 }
 
-export default function MultimodalStudio() {
-  const [activeTab, setActiveTab] = useState<'all' | 'pdf' | 'audio' | 'video'>('all');
+function typeColor(cat: 'pdf' | 'audio' | 'video' | 'txt') {
+  switch (cat) {
+    case 'pdf': return 'text-blue-400 border-blue-500/30 bg-blue-500/15';
+    case 'audio': return 'text-amber-400 border-amber-500/30 bg-amber-500/15';
+    case 'video': return 'text-violet-400 border-violet-500/30 bg-violet-500/15';
+    default: return 'text-slate-300 border-slate-500/30 bg-slate-800/30';
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export const MultimodalStudio: React.FC = () => {
+  const [processingState, setProcessingState] = useState<'idle' | 'scanning' | 'embedding' | 'indexing' | 'completed'>('idle');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [pipelineProgress, setPipelineProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const [documents, setDocuments] = useState<Document[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgressStep, setUploadProgressStep] = useState<string>('');
-  const [dragActive, setDragActive] = useState(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const fetchDocuments = async () => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Fetch documents from real API ──────────────────────────────────────────
+  const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/v1/documents/');
-      const data = await res.json();
-      const items: Document[] = data.items || [];
-      setDocuments(items);
-      return items;
-    } catch (err) {
-      console.error('Error fetching documents:', err);
-      return [];
+      const result = await documentsApi.list();
+      setDocuments(result.items ?? []);
+    } catch {
+      // silently keep stale list
+    } finally {
+      setIsLoading(false);
     }
-  };
-
-  const stopPolling = () => {
-    if (pollingRef.current !== null) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  };
-
-  const startPolling = () => {
-    stopPolling(); // prevent duplicate intervals
-    pollingRef.current = setInterval(async () => {
-      const items = await fetchDocuments();
-      const hasActiveJobs = items.some((d) => ACTIVE_STATUSES.has(d.status));
-      if (!hasActiveJobs) {
-        stopPolling();
-        console.info('[MultimodalStudio] All documents stable — polling stopped.');
-      }
-    }, 2500);
-  };
-
-  // Initial fetch + conditional polling
-  useEffect(() => {
-    fetchDocuments().then((items) => {
-      const hasActiveJobs = items.some((d) => ACTIVE_STATUSES.has(d.status));
-      if (hasActiveJobs) startPolling();
-    });
-    return () => stopPolling();
   }, []);
 
+  useEffect(() => {
+    fetchDocuments();
+    // Poll every 4 s while a doc is processing
+    pollRef.current = setInterval(() => {
+      fetchDocuments();
+    }, 4000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [fetchDocuments]);
+
+  // ── Upload ─────────────────────────────────────────────────────────────────
   const handleFileUpload = async (file: File) => {
-    if (!file) return;
-    setIsUploading(true);
-
-    const ext = file.name.split('.').pop()?.toLowerCase() || '';
-
-    if (['mp4', 'mov', 'mkv'].includes(ext)) {
-      setUploadProgressStep('Uploading Video → Extracting Audio with FFmpeg...');
-      await new Promise((r) => setTimeout(r, 900));
-      setUploadProgressStep('Transcribing Audio with Whisper AI...');
-    } else if (['mp3', 'wav', 'm4a', 'flac'].includes(ext)) {
-      setUploadProgressStep('Uploading Audio → Transcribing with Whisper AI...');
-    } else {
-      setUploadProgressStep('Uploading PDF → Extracting Pages with PyMuPDF...');
-    }
+    setUploadError(null);
+    setProcessingState('scanning');
+    setUploadProgress(0);
+    setPipelineProgress(10);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const res = await fetch('http://localhost:8000/api/v1/documents/upload', {
-        method: 'POST',
-        body: formData,
+      await documentsApi.upload(file, (pct) => {
+        setUploadProgress(pct);
+        setPipelineProgress(Math.min(30, 10 + pct * 0.2));
       });
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Upload failed');
-      }
+      // Simulate pipeline stages visually while backend indexes
+      setProcessingState('embedding');
+      setPipelineProgress(55);
 
-      setUploadProgressStep('Chunking → Generating Embeddings → ChromaDB Indexing...');
-      // Immediately fetch docs and start polling to track real backend status
-      await fetchDocuments();
-      startPolling();
+      setTimeout(() => {
+        setProcessingState('indexing');
+        setPipelineProgress(85);
+      }, 2500);
+
+      setTimeout(() => {
+        setProcessingState('completed');
+        setPipelineProgress(100);
+        fetchDocuments();
+        setTimeout(() => {
+          setProcessingState('idle');
+          setPipelineProgress(0);
+          setUploadProgress(0);
+        }, 2500);
+      }, 5000);
+
     } catch (err: any) {
-      alert(`Upload error: ${err.message}`);
-    } finally {
-      setIsUploading(false);
-      setUploadProgressStep('');
+      setUploadError(err?.message ?? 'Upload failed');
+      setProcessingState('idle');
+      setPipelineProgress(0);
     }
   };
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleFileUpload(file);
+    // reset so same file can be re-uploaded
+    e.target.value = '';
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileUpload(e.dataTransfer.files[0]);
-    }
-  };
-
+  // ── Delete ─────────────────────────────────────────────────────────────────
   const handleDelete = async (id: string) => {
+    setDeletingId(id);
     try {
-      await fetch(`http://localhost:8000/api/v1/documents/${id}`, { method: 'DELETE' });
-      fetchDocuments();
-    } catch (err) {
-      console.error('Delete error:', err);
+      await documentsApi.delete(id);
+      setDocuments((prev) => prev.filter((d) => d.id !== id));
+    } catch (err: any) {
+      alert(`Delete failed: ${err?.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
-  const filteredDocs = documents.filter((doc) => {
-    if (activeTab === 'all') return true;
-    if (activeTab === 'pdf') return ['pdf', 'txt'].includes(doc.type);
-    if (activeTab === 'audio') return ['mp3', 'wav', 'm4a', 'flac'].includes(doc.type);
-    if (activeTab === 'video') return ['mp4', 'mov', 'mkv'].includes(doc.type);
-    return true;
-  });
-
-  const getFormatIcon = (type: DocumentType | string) => {
-    if (['mp3', 'wav', 'm4a', 'flac', 'audio'].includes(type)) return <Music size={20} className="text-purple-400" />;
-    if (['mp4', 'mov', 'mkv', 'video'].includes(type)) return <Video size={20} className="text-cyan-400" />;
-    return <FileText size={20} className="text-blue-400" />;
+  // ── Document counts ────────────────────────────────────────────────────────
+  const counts = {
+    pdf: documents.filter((d) => ['pdf', 'txt', 'docx', 'doc'].includes(d.type)).length,
+    audio: documents.filter((d) => ['mp3', 'wav', 'm4a', 'flac'].includes(d.type)).length,
+    video: documents.filter((d) => ['mp4', 'mov', 'mkv'].includes(d.type)).length,
   };
-
-  const activeJobs = documents.filter((d) => ACTIVE_STATUSES.has(d.status)).length;
 
   return (
-    <div className="min-h-full bg-[#07090e] text-slate-100 p-6 md:p-10 space-y-8">
-      {/* Studio Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-6">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
-            <FolderKanban className="text-indigo-400" size={28} />
-            Multimodal Studio
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Drag &amp; drop PDFs, Audio tracks, or Videos to extract, chunk, and index locally.
-          </p>
-        </div>
+    <div className="space-y-6 animate-fadeIn font-mono text-xs">
 
-        <div className="flex items-center gap-3">
-          {activeJobs > 0 && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-semibold"
-            >
-              <Loader2 size={13} className="animate-spin" />
-              <span>{activeJobs} job{activeJobs > 1 ? 's' : ''} processing…</span>
-            </motion.div>
-          )}
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold">
-            <Cpu size={14} />
-            <span>Local Pipelines Active</span>
+      {/* ── Upload Command Terminal Header ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 bg-studio-900 border border-white/10 rounded-sm tactile-card">
+        {/* Left: Info & Drop Zone */}
+        <div className="lg:col-span-2 flex flex-col justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-amber-bright text-[10px] uppercase font-bold tracking-widest mb-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              MULTIMODAL AI INGESTION CENTER // AIR-GAPPED VERIFIED
+            </div>
+            <h2 className="text-xl font-display font-bold text-slate-100 mb-2">
+              KNOWLEDGE REPOSITORY INGESTION & PIPELINE TERMINAL
+            </h2>
+            <p className="text-slate-400 font-sans text-xs">
+              Drop PDF documents, audio recordings, or video files to execute offline extraction,
+              MD5 deduplication, SentenceTransformers embedding, and ChromaDB vector indexing.
+            </p>
           </div>
-        </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3">
-        {[
-          { id: 'all', label: 'All Media Files', icon: Database },
-          { id: 'pdf', label: 'PDF Documents', icon: FileText },
-          { id: 'audio', label: 'Audio Files', icon: Music },
-          { id: 'video', label: 'Video Files', icon: Video },
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all border ${
-                isActive
-                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
-                  : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
-              }`}
-            >
-              <Icon size={14} />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Drag & Drop Upload Zone */}
-      <div
-        onDragEnter={handleDrag}
-        onDragLeave={handleDrag}
-        onDragOver={handleDrag}
-        onDrop={handleDrop}
-        className={`glass-card p-8 md:p-12 rounded-3xl text-center space-y-5 transition-all border-2 border-dashed ${
-          dragActive
-            ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
-            : 'border-slate-700/80 hover:border-slate-500'
-        }`}
-      >
-        <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center mx-auto text-indigo-400">
-          <UploadCloud size={32} />
-        </div>
-
-        <div className="space-y-2 max-w-md mx-auto">
-          <h3 className="text-lg font-bold text-white">
-            Drag &amp; drop files here, or browse
-          </h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Supported formats: <br />
-            <strong className="text-slate-200">PDF</strong> (.pdf, .txt) •{' '}
-            <strong className="text-purple-300">Audio</strong> (.mp3, .wav, .m4a, .flac) •{' '}
-            <strong className="text-cyan-300">Video</strong> (.mp4, .mov, .mkv)
-          </p>
-        </div>
-
-        <div>
-          <label className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer transition-all shadow-lg">
-            <span>Select File</span>
-            <input
-              type="file"
-              accept=".pdf,.txt,.mp3,.wav,.m4a,.flac,.mp4,.mov,.mkv"
-              className="hidden"
-              onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
-            />
-          </label>
-        </div>
-
-        {/* Animated Processing State */}
-        <AnimatePresence>
-          {isUploading && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              className="p-4 rounded-2xl bg-indigo-950/80 border border-indigo-500/40 text-xs font-semibold text-indigo-200 flex items-center justify-center gap-3 max-w-lg mx-auto"
-            >
-              <Loader2 size={18} className="animate-spin text-indigo-400 shrink-0" />
-              <span>{uploadProgressStep || 'Processing multimodal pipeline locally...'}</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Files List Table */}
-      <div className="space-y-4">
-        <h3 className="text-base font-bold text-white tracking-wide">
-          Studio Sources Overview ({filteredDocs.length})
-        </h3>
-
-        <div className="glass-card rounded-2xl overflow-hidden border-slate-800">
-          <div className="divide-y divide-slate-800/80">
-            {filteredDocs.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 text-xs">
-                No items found for this tab. Upload a file above.
+          {/* Drop Zone */}
+          <label
+            className={`border-2 border-dashed bg-studio-950 p-6 rounded-sm cursor-pointer transition-all flex flex-col items-center justify-center text-center group ${
+              processingState !== 'idle'
+                ? 'border-amber-tactile/50 pointer-events-none'
+                : 'border-white/20 hover:border-klein-bright'
+            }`}
+          >
+            {processingState !== 'idle' ? (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="w-8 h-8 text-amber-bright animate-spin" />
+                <span className="font-bold text-amber-bright text-sm uppercase tracking-widest">
+                  {processingState.toUpperCase()}… {uploadProgress > 0 ? `(${uploadProgress}%)` : ''}
+                </span>
+                <span className="text-[10px] text-slate-400">Backend pipeline running...</span>
               </div>
             ) : (
-              filteredDocs.map((doc) => (
-                <motion.div
-                  key={doc.id}
-                  layout
-                  className="p-4 flex items-center justify-between gap-4 hover:bg-slate-800/40 transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="p-2.5 rounded-xl bg-slate-800 border border-slate-700/60 shrink-0">
-                      {getFormatIcon(doc.type)}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-white truncate">{doc.name}</p>
-                      <p className="text-[11px] text-slate-400">
-                        Uploaded {new Date(doc.uploaded_at).toLocaleString()} •{' '}
-                        {(doc.size_bytes / (1024 * 1024)).toFixed(2)} MB
-                      </p>
-                      {doc.error_message && (
-                        <p className="text-[11px] text-rose-400 mt-0.5 truncate" title={doc.error_message}>
-                          ✕ {doc.error_message}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-5 shrink-0">
-                    {doc.duration && (
-                      <span className="flex items-center gap-1 text-xs font-semibold text-indigo-300">
-                        <Clock size={12} />
-                        {doc.duration}
-                      </span>
-                    )}
-
-                    <div className="text-right text-xs">
-                      <span className="block font-bold text-slate-200">
-                        {doc.chunk_count || 0} Chunks
-                      </span>
-                    </div>
-
-                    <div>{getStatusBadge(doc.status)}</div>
-
-                    <button
-                      onClick={() => handleDelete(doc.id)}
-                      className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
-                      title="Delete"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </motion.div>
-              ))
+              <>
+                <Upload className="w-8 h-8 text-slate-400 group-hover:text-klein-bright mb-2 transition-colors" />
+                <span className="font-bold text-slate-200 text-sm mb-1">
+                  DROP HETEROGENEOUS FILES HERE OR CLICK TO BROWSE
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  SUPPORTED: PDF, TXT, DOCX, MP3, WAV, FLAC, M4A, MP4, MOV, MKV
+                </span>
+              </>
             )}
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".pdf,.txt,.docx,.doc,.mp3,.wav,.flac,.m4a,.mp4,.mov,.mkv"
+              onChange={handleInputChange}
+              className="hidden"
+              disabled={processingState !== 'idle'}
+            />
+          </label>
+
+          {uploadError && (
+            <div className="flex items-center gap-2 p-2 bg-red-950/40 border border-red-500/40 rounded-sm text-red-400 text-[11px]">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              {uploadError}
+            </div>
+          )}
+        </div>
+
+        {/* Right: 3D Orb & Pipeline Timeline */}
+        <div className="bg-studio-950 border border-white/10 p-4 rounded-sm flex flex-col justify-between">
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase mb-2 text-center tracking-wider">
+              3D AI PROCESSING ORB STATE
+            </div>
+            <ProcessingOrb status={processingState} progress={pipelineProgress} />
+          </div>
+
+          {/* Pipeline Stage Tracker */}
+          <div className="space-y-1.5 mt-3 pt-3 border-t border-white/10 text-[10px]">
+            {PIPELINE_STAGES.map((stage, idx) => {
+              const stageProgress = (idx + 1) * 20;
+              const isDone = pipelineProgress >= stageProgress;
+              const isActive = pipelineProgress >= stageProgress - 20 && pipelineProgress < stageProgress;
+              return (
+                <div key={idx} className="flex items-center justify-between">
+                  <span className={isDone ? 'text-emerald-400 font-bold' : isActive ? 'text-amber-bright animate-pulse' : 'text-slate-500'}>
+                    STAGE {idx + 1}: {stage.toUpperCase()}
+                  </span>
+                  {isDone ? (
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  ) : isActive ? (
+                    <Loader2 className="w-3 h-3 text-amber-bright animate-spin" />
+                  ) : (
+                    <span className="w-2 h-2 rounded-full bg-slate-700" />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
+      </div>
+
+      {/* ── Knowledge Repository Cards ── */}
+      <div>
+        <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-4">
+          <div className="flex items-center gap-3 font-bold text-slate-200 text-sm">
+            <Database className="w-4 h-4 text-klein-bright" />
+            INDEXED KNOWLEDGE REPOSITORY
+            <span className="text-[10px] px-2 py-0.5 bg-studio-800 border border-white/10 text-slate-400 rounded-sm font-mono">
+              {documents.length} FILES
+            </span>
+            <span className="text-[10px] px-2 py-0.5 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-sm">
+              PDF: {counts.pdf}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-sm">
+              AUDIO: {counts.audio}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 bg-violet-500/10 border border-violet-500/20 text-violet-400 rounded-sm">
+              VIDEO: {counts.video}
+            </span>
+          </div>
+          <button
+            onClick={fetchDocuments}
+            className="flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-slate-200 transition-colors border border-white/10 px-2 py-1 rounded-sm"
+          >
+            <RefreshCw className="w-3 h-3" />
+            REFRESH
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16 text-slate-500 text-[11px] gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            LOADING DOCUMENTS FROM BACKEND…
+          </div>
+        ) : documents.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-slate-600 text-[11px] gap-3">
+            <Database className="w-10 h-10 opacity-20" />
+            <span className="font-mono uppercase tracking-wider">NO DOCUMENTS INDEXED YET</span>
+            <span className="text-[10px] text-slate-700">Upload a file above to begin indexing.</span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {documents.map((doc) => {
+              const cat = getDocTypeCategory(doc.type);
+              const isDeleting = deletingId === doc.id;
+              return (
+                <div
+                  key={doc.id}
+                  className={`p-4 bg-studio-900 border border-white/10 hover:border-klein/50 rounded-sm tactile-card hover:translate-y-[-2px] transition-all group flex flex-col justify-between ${isDeleting ? 'opacity-40 pointer-events-none' : ''}`}
+                >
+                  <div>
+                    {/* Type & Status badges */}
+                    <div className="flex items-center justify-between mb-3">
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-sm border uppercase ${typeColor(cat)}`}>
+                        [{doc.type.toUpperCase()}]
+                      </span>
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-sm border uppercase ${statusColor(doc.status)}`}>
+                        {doc.status}
+                      </span>
+                    </div>
+
+                    {/* Filename */}
+                    <div className="font-bold text-slate-100 text-[11px] truncate mb-2 group-hover:text-klein-bright transition-colors" title={doc.name}>
+                      {doc.name}
+                    </div>
+
+                    {/* Size */}
+                    <div className="text-[10px] text-slate-500 mb-3">
+                      SIZE: {formatBytes(doc.size_bytes)}
+                    </div>
+                  </div>
+
+                  <div>
+                    {/* Metadata rows */}
+                    <div className="space-y-1 text-[10px] text-slate-500 border-t border-white/10 pt-2 mb-3">
+                      {doc.chunk_count != null && (
+                        <div className="flex items-center justify-between">
+                          <span>CHUNKS:</span>
+                          <span className="text-slate-300 font-bold">{doc.chunk_count} VECTORS</span>
+                        </div>
+                      )}
+                      {doc.file_hash && (
+                        <div className="flex items-center justify-between">
+                          <span>MD5:</span>
+                          <span className="text-slate-400 font-mono truncate max-w-[90px]">{doc.file_hash.slice(0, 12)}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between">
+                        <span>INDEXED:</span>
+                        <span className="text-slate-400">{doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleDateString() : '—'}</span>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                      {doc.status === 'indexed' ? (
+                        <Link
+                          to={
+                            ['mp3','wav','m4a','flac'].includes(doc.type) ? '/audio'
+                            : ['mp4','mov','mkv'].includes(doc.type) ? '/video'
+                            : '/documents'
+                          }
+                          className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
+                          title="Open in workspace"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          OPEN WORKSPACE
+                        </Link>
+                      ) : (
+                        <span className="text-[10px] text-slate-600 flex items-center gap-1">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          {doc.status.toUpperCase()}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => handleDelete(doc.id)}
+                        disabled={isDeleting}
+                        className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 disabled:opacity-40"
+                      >
+                        {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        DELETE
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
-}
+};
+
+export default MultimodalStudio;

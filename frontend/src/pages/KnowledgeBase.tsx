@@ -45,7 +45,10 @@ function getDocIcon(type: DocumentType) {
 
 const STATUS_STYLES: Record<Document['status'], { bg: string; text: string; label: string }> = {
   uploaded: { bg: 'rgba(59,130,246,0.15)', text: '#93c5fd', label: 'Uploaded' },
+  queued: { bg: 'rgba(148,163,184,0.15)', text: '#cbd5e1', label: 'Queued' },
   processing: { bg: 'rgba(245,158,11,0.15)', text: '#fcd34d', label: 'Processing' },
+  transcribing: { bg: 'rgba(168,85,247,0.15)', text: '#d8b4fe', label: 'Transcribing' },
+  embedding: { bg: 'rgba(59,130,246,0.15)', text: '#93c5fd', label: 'Embedding' },
   indexed: { bg: 'rgba(34,197,94,0.15)', text: '#86efac', label: 'Indexed' },
   failed: { bg: 'rgba(239,68,68,0.15)', text: '#fca5a5', label: 'Failed' },
 };
