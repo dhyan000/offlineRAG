@@ -1,12 +1,4 @@
-/**
- * Global TypeScript Interfaces
- * ============================
- * Shared types used across the entire frontend application.
- */
-
 import type { LucideIcon } from 'lucide-react';
-
-// ── System ────────────────────────────────────────────────────────────────────
 
 export type ServiceStatus = 'operational' | 'degraded' | 'not_configured' | 'error';
 
@@ -34,10 +26,9 @@ export interface VersionInfo {
   build_date: string;
 }
 
-// ── Documents (Knowledge Base) ────────────────────────────────────────────────
-
-export type DocumentStatus = 'uploaded' | 'processing' | 'indexed' | 'failed';
-export type DocumentType = 'pdf' | 'docx' | 'txt' | 'xlsx' | 'csv' | 'png' | 'jpg' | 'mp3' | 'mp4' | 'unknown';
+export type DocumentStatus = 'uploaded' | 'queued' | 'processing' | 'transcribing' | 'embedding' | 'indexed' | 'failed';
+export type DocumentType = 'pdf' | 'audio' | 'video' | 'txt' | 'doc' | 'docx' | 'xlsx' | 'csv' | 'png' | 'jpg' | 'mp3' | 'wav' | 'm4a' | 'flac' | 'mp4' | 'mov' | 'mkv' | 'unknown';
+export type SourceFilterType = 'all' | 'pdf' | 'audio' | 'video';
 
 export interface Document {
   id: string;
@@ -47,52 +38,50 @@ export interface Document {
   status: DocumentStatus;
   uploaded_at: string;
   indexed_at?: string;
+  duration?: string;
+  file_hash?: string;
   chunk_count?: number;
   error_message?: string;
 }
 
-// ── Chat ──────────────────────────────────────────────────────────────────────
+export interface ChatSource {
+  filename: string;
+  type: string;
+  location?: string;
+  confidence?: number;
+}
 
-export type MessageRole = 'user' | 'assistant' | 'system';
+export interface RetrievedChunk {
+  chunk_id: string;
+  filename: string;
+  type: string;
+  location?: string;
+  text: string;
+  confidence: number;
+  similarity: number;
+}
 
-export interface Source {
-  document_id: string;
-  document_name: string;
-  chunk_index: number;
-  relevance_score: number;
-  excerpt: string;
+export interface RetrievalMetrics {
+  embedding_ms: number;
+  retrieval_ms: number;
+  prompt_ms?: number;
+  ollama_ms?: number;
+  total_ms: number;
+  chunks_retrieved: number;
 }
 
 export interface Message {
   id: string;
-  role: MessageRole;
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
-  sources?: any[];
+  sources?: ChatSource[];
+  retrieved_chunks?: RetrievedChunk[];
+  max_confidence?: number;
+  timings?: RetrievalMetrics;
   is_streaming?: boolean;
   status?: string;
-  timings?: any;
 }
-
-export interface Conversation {
-  id: string;
-  title: string;
-  messages: Message[];
-  created_at: string;
-  updated_at: string;
-}
-
-// ── Analytics ─────────────────────────────────────────────────────────────────
-
-export interface AnalyticsSummary {
-  total_documents: number;
-  total_chunks: number;
-  total_queries: number;
-  storage_used_bytes: number;
-  active_model: string;
-}
-
-// ── Logs ──────────────────────────────────────────────────────────────────────
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
 
@@ -106,56 +95,9 @@ export interface LogEntry {
   line: number;
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-
-export interface LLMSettings {
-  model: string;
-  temperature: number;
-  max_tokens: number;
-  ollama_url: string;
-}
-
-export interface EmbeddingSettings {
-  model: string;
-  chunk_size: number;
-  chunk_overlap: number;
-}
-
-export interface DatabaseSettings {
-  chroma_persist_dir: string;
-  sqlite_path: string;
-}
-
-export interface AppSettings {
-  llm: LLMSettings;
-  embedding: EmbeddingSettings;
-  database: DatabaseSettings;
-  theme: 'dark' | 'light';
-  language: string;
-}
-
-// ── API Response ──────────────────────────────────────────────────────────────
-
-export interface ApiResponse<T> {
-  data?: T;
-  error?: string;
-  message?: string;
-}
-
-// ── Pagination ────────────────────────────────────────────────────────────────
-
-export interface PaginatedResponse<T> {
-  items: T[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-}
-
-// ── Navigation ────────────────────────────────────────────────────────────────
-
 export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
+  badge?: string;
 }

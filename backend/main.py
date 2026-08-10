@@ -32,21 +32,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Handle application startup and shutdown events."""
     # ── Startup ───────────────────────────────────────────────────────────────
     configure_logging()
-    from backend.core.database import Base, engine
+    from backend.core.database import init_and_migrate_db
     try:
-        logger.info("Initializing SQL database tables...")
-        Base.metadata.create_all(bind=engine)
-        logger.success("Database tables initialized.")
+        logger.info("Initializing SQL database tables and schema migrations...")
+        init_and_migrate_db()
+        logger.success("Database tables initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize database tables: {e}")
 
-    # Preload models and DB to avoid cold starts
+    # --- Startup Validation & Preloading ---
     from backend.processors.embeddings.embedding_service import EmbeddingService
     from backend.processors.vectordb.chroma_service import ChromaService
-    logger.info("Preloading embedding model and ChromaDB...")
+    from backend.processors.audio.audio_processor import ensure_ffmpeg_in_path, get_whisper_model
+
+    # 1. FFmpeg validation (required by Whisper audio/video pipelines)
+    logger.info("[Startup] Validating FFmpeg availability...")
+    try:
+        ensure_ffmpeg_in_path()
+    except Exception as e:
+        logger.error(
+            f"[Startup] CRITICAL: FFmpeg is not available. Audio/Video uploads will fail.\n"
+            f"Fix: pip install imageio-ffmpeg\nError: {e}"
+        )
+
+    # 2. Sentence Transformers embedding model
+    logger.info("[Startup] Loading all-MiniLM-L6-v2 embedding model...")
     EmbeddingService.get_model()
+
+    # 3. ChromaDB vector store
+    logger.info("[Startup] Connecting to ChromaDB persistent store...")
     ChromaService.get_client()
-    logger.success("Preloading complete.")
+
+    # 4. Whisper speech recognition model
+    logger.info("[Startup] Preloading Whisper 'tiny' model (CPU mode)...")
+    try:
+        get_whisper_model()
+    except Exception as e:
+        logger.warning(f"[Startup] Whisper preloading deferred: {e}")
+
+    logger.success("[Startup] All models and services ready.")
+
 
     logger.info("=" * 60)
     logger.info(f"  {settings.APP_NAME}")

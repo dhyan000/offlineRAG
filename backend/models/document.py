@@ -16,5 +16,7 @@ class Document(Base):
     status = Column(String, default="uploaded")
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     indexed_at = Column(DateTime, nullable=True)
+    duration = Column(String, nullable=True)
+    file_hash = Column(String, nullable=True, index=True)
     chunk_count = Column(Integer, default=0)
     error_message = Column(String, nullable=True)

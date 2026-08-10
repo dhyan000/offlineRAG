@@ -1,9 +1,7 @@
-from typing import Any
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Ensure storage directory exists
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
@@ -22,3 +20,19 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def init_and_migrate_db():
+    """Initializes tables and automatically adds missing columns for schema updates."""
+    Base.metadata.create_all(bind=engine)
+    try:
+        inspector = inspect(engine)
+        if "documents" in inspector.get_table_names():
+            columns = [c["name"] for c in inspector.get_columns("documents")]
+            with engine.connect() as conn:
+                if "duration" not in columns:
+                    conn.execute(text("ALTER TABLE documents ADD COLUMN duration VARCHAR;"))
+                if "file_hash" not in columns:
+                    conn.execute(text("ALTER TABLE documents ADD COLUMN file_hash VARCHAR;"))
+                conn.commit()
+    except Exception as e:
+        print(f"Database migration notice: {e}")

@@ -15,6 +15,13 @@ router = APIRouter()
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "storage", "documents")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
+SUPPORTED_EXTENSIONS = {
+    "pdf": ["pdf", "txt"],
+    "audio": ["mp3", "wav", "m4a", "flac"],
+    "video": ["mp4", "mov", "mkv"]
+}
+ALL_EXTENSIONS = [ext for cat in SUPPORTED_EXTENSIONS.values() for ext in cat]
+
 def run_ingestion_in_background(doc_id: str, file_path: str):
     db = SessionLocal()
     try:
@@ -30,29 +37,26 @@ async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # Verify file extension (Phase 1 supports PDF and TXT only)
     ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ""
-    if ext not in ["pdf", "txt"]:
+    if ext not in ALL_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format '.{ext}'. Only PDF and TXT files are supported in Phase 1."
+            detail=f"Unsupported file format '.{ext}'. Supported formats: PDF (pdf, txt), Audio (mp3, wav, m4a, flac), Video (mp4, mov, mkv)."
         )
 
-    # Store physically with unique UUID prefix
     doc_id = str(uuid.uuid4())
     file_path = os.path.join(STORAGE_DIR, f"{doc_id}_{file.filename}")
-    
-    logger.info(f"Uploading file {file.filename} (assigning ID: {doc_id})...")
+
+    logger.info(f"Uploading multimodal file {file.filename} (ID: {doc_id})...")
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
         logger.error(f"Failed to save file physically: {e}")
         raise HTTPException(status_code=500, detail="Failed to save uploaded file locally.")
-        
+
     size_bytes = os.path.getsize(file_path)
 
-    # Store metadata in DB
     db_doc = Document(
         id=doc_id,
         name=file.filename,
@@ -63,7 +67,7 @@ async def upload_document(
     db.add(db_doc)
     db.commit()
     db.refresh(db_doc)
-    
+
     logger.info(f"File metadata saved to database. Launching background ingestion...")
     background_tasks.add_task(run_ingestion_in_background, db_doc.id, file_path)
 
@@ -71,19 +75,17 @@ async def upload_document(
 
 @router.get("/")
 def get_documents(db: Session = Depends(get_db)):
-    docs = db.query(Document).all()
+    docs = db.query(Document).order_by(Document.uploaded_at.desc()).all()
     return {"items": docs}
 
 @router.delete("/{id}")
 def delete_document(id: str, db: Session = Depends(get_db)):
-    # 1. Fetch document
     doc_record = db.query(Document).filter(Document.id == id).first()
     if not doc_record:
         raise HTTPException(status_code=404, detail="Document not found.")
 
     logger.info(f"Deleting document {doc_record.name} ({id})...")
 
-    # 2. Delete physically
     file_path = os.path.join(STORAGE_DIR, f"{doc_record.id}_{doc_record.name}")
     try:
         if os.path.exists(file_path):
@@ -92,13 +94,11 @@ def delete_document(id: str, db: Session = Depends(get_db)):
     except Exception as e:
         logger.warning(f"Could not delete physical file {file_path}: {e}")
 
-    # 3. Delete from ChromaDB
     try:
         ChromaService.delete_document_chunks(doc_record.id)
     except Exception as e:
         logger.warning(f"Could not delete ChromaDB chunks for document {doc_record.id}: {e}")
 
-    # 4. Delete from SQL DB
     try:
         db.delete(doc_record)
         db.commit()
